@@ -30,9 +30,25 @@ func HandleDNSQuery(data []byte) ([]byte, error) {
 			i+1, q.Name, q.Type, q.Class)
 	}
 
+	// Answer questions
+	var answers []DNSAnswer
+	for _, q := range questions {
+		answer, err := CreateAnswerForQuestion(q)
+		if err != nil {
+			return nil, err
+		}
+
+		// Log answers
+		ip := net.IP(answer.Data).String()
+		fmt.Printf("Answer for %s: %s (TTL: %d)\n", q.Name, ip, answer.TTL)
+
+		answers = append(answers, answer)
+	}
+
 	// Create response header
 	responseHeader := CreateResponseHeader(header.ID)
 	responseHeader.QDCount = header.QDCount
+	responseHeader.ANCount = uint16(len(answers))
 
 	// Build response
 	var response []byte
@@ -42,6 +58,11 @@ func HandleDNSQuery(data []byte) ([]byte, error) {
 
 	// 2. Echo back the questions
 	response = append(response, QuestionsToBytes(questions)...)
+
+	// 3. Add answers
+	for _, a := range answers {
+		response = append(response, a.ToBytes()...)
+	}
 
 	return response, nil
 }
