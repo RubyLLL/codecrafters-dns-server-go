@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 )
 
 // DNSHeader represents a DNS packet header with bit-level fields
@@ -15,6 +16,30 @@ type DNSHeader struct {
 	ANCount uint16 // 16 bits - Answer Record Count
 	NSCount uint16 // 16 bits - Authority Record Count
 	ARCount uint16 // 16 bits - Additional Record Count
+}
+
+type DNSQuestion struct {
+	Name  string // Domain name being queried
+	Type  uint16 // 16 bits - Question Type (e.g., 1 for A record, 28 for AAAA)
+	Class uint16 // 16 bits - Question Class (e.g., 1 for IN - Internet)
+}
+
+// ToBytes converts a question to DNS format
+func (q *DNSQuestion) ToBytes() []byte {
+	var buf []byte
+
+	// Add domain name
+	buf = append(buf, encodeDomainName(q.Name)...)
+
+	// Add Type and Class
+	typeBytes := make([]byte, 2)
+	classBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(typeBytes, q.Type)
+	binary.BigEndian.PutUint16(classBytes, q.Class)
+	buf = append(buf, typeBytes...)
+	buf = append(buf, classBytes...)
+
+	return buf
 }
 
 // Bit masks for extracting/setting individual flag bits
@@ -147,6 +172,146 @@ func ParseHeader(data []byte) (DNSHeader, error) {
 
 var ErrInvalidHeader = errors.New("invalid DNS header")
 
+// parseDomainName parses a domain name from DNS data
+func parseDomainName(data []byte, offset int) (string, int, error) {
+	var labels []string
+	start := offset
+
+	for {
+		if offset >= len(data) {
+			return "", start, errors.New("domain name exceeds buffer")
+		}
+
+		// Read label length
+		labelLength := int(data[offset])
+		offset++ // Move past the label length byte
+
+		// Flush byte, end of domain name
+		if labelLength == 0 {
+			break
+		}
+
+		if offset+labelLength > len(data) {
+			return "", start, errors.New("label length exceeds buffer")
+		}
+
+		// Read the label
+		label := string(data[offset : offset+labelLength])
+		labels = append(labels, label)
+
+		// Move pass the label
+		offset += labelLength
+	}
+
+	// Join the labels with dots to form the domain name
+	domain := ""
+	for _, label := range labels {
+		domain += label + "."
+	}
+	// Remove the trailing dot
+	domain = domain[:len(domain)-1]
+
+	return domain, offset, nil
+}
+
+// ParseQuestions reads DNS Question
+func ParseQuestions(data []byte, header DNSHeader, offset int) ([]DNSQuestion, int, error) {
+	questions := make([]DNSQuestion, header.QDCount)
+
+	for i := 0; i < int(header.QDCount); i++ {
+		// Parse domain name
+		name, newOffset, err := parseDomainName(data, offset)
+		if err != nil {
+			return nil, 0, err
+		}
+		offset = newOffset
+
+		// Check if we have enough bytes for Type and Class
+		if offset+4 > len(data) {
+			return nil, 0, errors.New("malformed DNS question: insufficient data for QTYPE and QCLASS")
+		}
+
+		// Read Type (2 bytes) and Class(2 bytes)
+		question := DNSQuestion{
+			Name:  name,
+			Type:  binary.BigEndian.Uint16(data[offset : offset+2]),
+			Class: binary.BigEndian.Uint16(data[offset+2 : offset+4]),
+		}
+		questions[i] = question
+		offset += 4
+	}
+
+	return questions, offset, nil
+}
+
+// encodeDomainName encodes a domain name to DNS format
+func encodeDomainName(domain string) []byte {
+	var buf []byte
+
+	// Split domain name into labels
+	labels := strings.Split(domain, ".")
+
+	// Encode each lavel
+	for _, label := range labels {
+		buf = append(buf, byte(len(label)))
+		buf = append(buf, []byte(label)...)
+	}
+
+	// Add terminating null byte
+	buf = append(buf, 0x00)
+
+	return buf
+}
+
+// QuestionToBytes converts multiple questions to DNS format
+func QuestionsToBytes(questions []DNSQuestion) []byte {
+	var buf []byte
+	for _, q := range questions {
+		buf = append(buf, q.ToBytes()...)
+	}
+	return buf
+}
+
+// HandleDNSQuery processes a DNS query
+func HandleDNSQuery(data []byte) ([]byte, error) {
+	// Parse DNS Header
+	if len(data) < 12 {
+		return nil, errors.New("packet too short for DNS header")
+	}
+
+	header, err := ParseHeader(data[:12])
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse questions from client query
+	questions, _, err := ParseQuestions(data, header, 12)
+	if err != nil {
+		return nil, err
+	}
+
+	// Log questions
+	for i, q := range questions {
+		fmt.Printf("Question %d: %s (Type: %d, Class: %d)\n",
+			i+1, q.Name, q.Type, q.Class)
+	}
+
+	// Create response header
+	responseHeader := CreateResponseHeader(header.ID)
+	responseHeader.QDCount = header.QDCount
+
+	// Build response
+	var response []byte
+
+	// 1. Add header
+	response = append(response, responseHeader.ToBytes()...)
+
+	// 2. Echo back the questions
+	response = append(response, QuestionsToBytes(questions)...)
+
+	return response, nil
+}
+
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Println("Logs from your program will appear here!")
@@ -178,14 +343,7 @@ func main() {
 		receivedData := string(buf[:size])
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
-		// Extract ID from request
-		requestID := binary.BigEndian.Uint16(buf[0:2])
-
-		// Create a response header with expected values
-		header := CreateResponseHeader(requestID)
-
-		// Convert to bytes for transimission
-		response := header.ToBytes()
+		response, err := HandleDNSQuery(buf[:size])
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
