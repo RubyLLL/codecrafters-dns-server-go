@@ -95,7 +95,7 @@ func (h *DNSHeader) GetRCODE() byte {
 }
 
 // CreateResponseHeader creates a DNS response header with expected values
-func CreateResponseHeader(queryID uint16) DNSHeader {
+func CreateResponseHeader(queryID uint16, opCode, rd byte) DNSHeader {
 	header := DNSHeader{
 		ID:      queryID,
 		QDCount: 0,
@@ -105,13 +105,18 @@ func CreateResponseHeader(queryID uint16) DNSHeader {
 	}
 
 	header.SetQR(1)
-	header.SetOPCODE(0)
+	header.SetOPCODE(opCode)
 	header.SetAA(0)
 	header.SetTC(0)
-	header.SetRD(0)
+	header.SetRD(rd)
 	header.SetRA(0)
 	header.SetZ(0)
-	header.SetRCODE(0)
+	// 0 (no error) if OPCODE is 0 (standard query) else 4 (not implemented)
+	if opCode == 0 {
+		header.SetRCODE(0)
+	} else {
+		header.SetRCODE(4)
+	}
 
 	return header
 }

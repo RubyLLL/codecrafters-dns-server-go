@@ -46,7 +46,7 @@ func HandleDNSQuery(data []byte) ([]byte, error) {
 	}
 
 	// Create response header
-	responseHeader := CreateResponseHeader(header.ID)
+	responseHeader := CreateResponseHeader(header.ID, header.GetOPCODE(), header.GetRD())
 	responseHeader.QDCount = header.QDCount
 	responseHeader.ANCount = uint16(len(answers))
 
