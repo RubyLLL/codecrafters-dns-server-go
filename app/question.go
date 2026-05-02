@@ -32,16 +32,53 @@ func (q *DNSQuestion) ToBytes() []byte {
 func parseDomainName(data []byte, offset int) (string, int, error) {
 	var labels []string
 	start := offset
+	nextOffset := offset
+	jumped := false
+	visited := make(map[int]bool)
 
 	for {
 		if offset >= len(data) {
 			return "", start, errors.New("domain name exceeds buffer")
 		}
+		if visited[offset] {
+			return "", start, errors.New("compression pointer loop")
+		}
+		visited[offset] = true
 
 		labelLength := int(data[offset])
+
+		// if sequence begins with two ones, it is a compressed pointer
+		if labelLength&0xC0 == 0xC0 {
+			if offset+1 >= len(data) {
+				return "", start, errors.New("compression pointer exceeds buffer")
+			}
+
+			// 0x3fff = 0011 1111 1111 1111
+			// this removes two highest ones, reveal the actual pointer
+			pointer := int(binary.BigEndian.Uint16(data[offset:offset+2]) & 0x3FFF)
+			if pointer >= len(data) {
+				return "", start, errors.New("compression pointer target exceeds buffer")
+			}
+			if !jumped {
+				nextOffset = offset + 2
+			}
+
+			offset = pointer // next loop will go to pointer's position
+			jumped = true
+			continue
+		}
+		if labelLength&0xC0 != 0 {
+			return "", start, errors.New("invalid domain label length")
+		}
+
 		offset++
 
+		// reached the end of that domain name
 		if labelLength == 0 {
+			if !jumped {
+				// continue at QTYPE
+				nextOffset = offset
+			}
 			break
 		}
 
@@ -55,7 +92,7 @@ func parseDomainName(data []byte, offset int) (string, int, error) {
 	}
 
 	domain := strings.Join(labels, ".")
-	return domain, offset, nil
+	return domain, nextOffset, nil
 }
 
 // ParseQuestions reads DNS Question
