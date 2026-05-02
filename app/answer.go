@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/rand"
 	"net"
 	"time"
@@ -51,6 +52,41 @@ func (a *DNSAnswer) ToBytes() []byte {
 	buf = append(buf, a.Data...)
 
 	return buf
+}
+
+func ParseAnswers(data []byte, offset int, count uint16) ([]DNSAnswer, int, error) {
+	answers := make([]DNSAnswer, 0, count)
+
+	for i := 0; i < int(count); i++ {
+		name, newOffset, err := parseDomainName(data, offset)
+		if err != nil {
+			return nil, 0, err
+		}
+		offset = newOffset
+
+		if offset+10 > len(data) {
+			return nil, 0, errors.New("malformed DNS answer: insufficient data")
+		}
+
+		answer := DNSAnswer{
+			Name:   name,
+			Type:   binary.BigEndian.Uint16(data[offset : offset+2]),
+			Class:  binary.BigEndian.Uint16(data[offset+2 : offset+4]),
+			TTL:    binary.BigEndian.Uint32(data[offset+4 : offset+8]),
+			Length: binary.BigEndian.Uint16(data[offset+8 : offset+10]),
+		}
+		offset += 10
+
+		if offset+int(answer.Length) > len(data) {
+			return nil, 0, errors.New("malformed DNS answer: data exceeds buffer")
+		}
+
+		answer.Data = append([]byte(nil), data[offset:offset+int(answer.Length)]...)
+		offset += int(answer.Length)
+		answers = append(answers, answer)
+	}
+
+	return answers, offset, nil
 }
 
 // CreateAnswerForQuestion gives answer to DNS questions
